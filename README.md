@@ -69,7 +69,7 @@ end
 - [VARIMA models](#varima-models)
 - [Kalman filter and smoother](#kalman-filter-and-smoother)
 - [Estimation of state-space models](#estimation-of-state-space-models)
-- [Bootstrap and jackknife subsampling](#subsampling)
+- [Subsampling](#subsampling)
 
 
 ### ARIMA models
