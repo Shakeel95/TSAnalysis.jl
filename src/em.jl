@@ -1,16 +1,16 @@
 """
-    update_em_stats!(estim_settings::EstimSettings, Xs::FloatVector, Xs_old::FloatVector, Ps::SymMatrix, Ps_old::SymMatrix, E::FloatArray, F::FloatArray, G::FloatArray)
+    update_em_stats!(estim_settings::EstimSettings, Xs::FloatVector, Xs_old::FloatVector, Ps::SymMatrix, Ps_old::SymMatrix, E::FloatArray, F::FloatArray, G::FloatArray, YXs::FloatMatrix)
 
 Update the EM statistics.
 """
-function update_em_stats!(estim_settings::EstimSettings, Xs::FloatVector, Xs_old::FloatVector, Ps::SymMatrix, Ps_old::SymMatrix, E::FloatArray, F::FloatArray, G::FloatArray)
+function update_em_stats!(estim_settings::EstimSettings, Xs::FloatVector, Xs_old::FloatVector, Ps::SymMatrix, Ps_old::SymMatrix, E::FloatArray, F::FloatArray, G::FloatArray, YXs::FloatMatrix)
 
     # Views
-    Xs_view = @view Xs[1:estim_settings.r];
-    Ps_view = @view Ps[1:estim_settings.r, 1:estim_settings.r];
-    Xs_old_view = @view Xs_old[1:estim_settings.rp];
-    Ps_old_view = @view Ps_old[1:estim_settings.rp, 1:estim_settings.rp];
-    PPs_view = @view Ps[1:estim_settings.r, estim_settings.r+1:end];
+    Xs_view = @view Xs[1:estim_settings.s];
+    Ps_view = @view Ps[1:estim_settings.s, 1:estim_settings.s];
+    Xs_old_view = @view Xs_old[1:estim_settings.sp];
+    Ps_old_view = @view Ps_old[1:estim_settings.sp, 1:estim_settings.sp];
+    PPs_view = @view Ps[1:estim_settings.s, estim_settings.s+1:end];
 
     # Update EM statistics
     E .+= Xs_view*Xs_view' + Ps_view;
@@ -35,16 +35,17 @@ The state space model used below is,
 Where ``e_{t} ~ N(0, R)`` and ``v_{t} ~ N(0, V)``.
 
 # Arguments
-- `estim_settings`: EstimSettings struct
-- `kalman_settings`: MutableKalmanSettings struct
-- `status`: KalmanStatus struct
+- `estim_settings`: EstimSettings struct used for the estimation.
+- `kalman_settings`: MutableKalmanSettings struct.
+- `status`: KalmanStatus struct.
 """
 function ksmoother_em!(estim_settings::EstimSettings, kalman_settings::MutableKalmanSettings, status::KalmanStatus)
 
     # Memory pre-allocation
-    E = zeros(estim_settings.r, estim_settings.r);
-    F = zeros(estim_settings.r, estim_settings.rp);
-    G = zeros(estim_settings.rp, estim_settings.rp);
+    E = zeros(estim_settings.s, estim_settings.s);
+    F = zeros(estim_settings.s, estim_settings.sp);
+    G = zeros(estim_settings.sp, estim_settings.sp);
+    YXs = zeros(kalman_settings.n, kalman_settings.m);
     Xs = status.X_post;
     Ps = status.P_post;
 
@@ -82,17 +83,16 @@ function ksmoother_em!(estim_settings::EstimSettings, kalman_settings::MutableKa
     # Update EM statistics
     update_em_stats!(estim_settings, Xs, kalman_settings.X0, Ps, kalman_settings.P0, E, F, G);
 
-    # Use Symmetric for E and G
-    E_sym = Symmetric(E)::SymMatrix;
+    # Use Symmetric for G
     G_sym = Symmetric(G)::SymMatrix;
 
     # Return EM statistics
-    return E_sym, F, G_sym;
+    return E, F, G_sym;
 end
 
 """
 """
-function em_observation!()
+function em_observation!(kalman_settings::MutableKalmanSettings, estim_settings::EstimSettings, E::FloatMatrix)
 end
 
 """
@@ -100,19 +100,20 @@ end
 
 Update coefficients of the transition equation.
 """
-function em_transition!(kalman_settings::MutableKalmanSettings, estim_settings::EstimSettings, E::SymMatrix, F::FloatMatrix, G::SymMatrix)
+function em_transition!(kalman_settings::MutableKalmanSettings, estim_settings::EstimSettings, E::FloatMatrix, F::FloatMatrix, G::SymMatrix)
 
     # Initialise
-    Ψ = @view kalman_settings.C[1:estim_settings.r, 1:estim_settings.rp];
+    Ψ = @view kalman_settings.C[1:estim_settings.s, 1:estim_settings.sp];
+    E_var = @view E[estim_settings.s, estim_settings.s];
 
     # VAR(p) coefficients
-    for i=1:estim_settings.r
-        F_i = @view F[i, 1:estim_settings.rp];
-        kalman_settings.C[i, 1:estim_settings.rp] = inv(G)*F_i;
+    for i=1:estim_settings.s
+        F_i = @view F[i, 1:estim_settings.sp];
+        kalman_settings.C[i, 1:estim_settings.sp] = inv(G)*F_i;
     end
 
     # Covariance matrix of the VAR(p) residuals
-    parent(kalman_settings.V)[1:estim_settings.r, 1:estim_settings.r] = Symmetric(E-F*Ψ'-Ψ*F'+Ψ*G*Ψ')::SymMatrix ./ estim_settings.T;
+    parent(kalman_settings.V)[1:estim_settings.s, 1:estim_settings.s] = Symmetric(E_var-F*Ψ'-Ψ*F'+Ψ*G*Ψ')::SymMatrix ./ estim_settings.T;
 end
 
 """
@@ -153,7 +154,7 @@ function em_routine(kalman_settings::MutableKalmanSettings, estim_settings::Esti
 end
 
 """
-    em_estimation(kalman_settings::MutableKalmanSettings, estim_settings::EstimSettings
+    em_estimation(kalman_settings::MutableKalmanSettings, estim_settings::EstimSettings)
 
 Estimate state-space models via an EM algorithm.
 
@@ -161,12 +162,10 @@ The code implements the EM similarly to the ECM in Pellegrino (2020).
 
 # Arguments
 - `kalman_settings`: MutableKalmanSettings struct.
-- `estim_settings`: settings used for the estimation.
+- `estim_settings`: EstimSettings struct used for the estimation.
 
 # References
-- Dempster, Laird and Rubin (1977)
-- Pellegrino (2020)
-- Shumway and Stoffer (1982)
+- Dempster, Laird and Rubin (1977), Pellegrino (2020), Shumway and Stoffer (1982).
 """
-function em_estimation()
+function em_estimation(kalman_settings::MutableKalmanSettings, estim_settings::EstimSettings)
 end
