@@ -1,18 +1,20 @@
 """
-    update_em_stats!(estim_settings::EstimSettings, Xs::FloatVector, Xs_old::FloatVector, Ps::SymMatrix, Ps_old::SymMatrix, E::FloatArray, F::FloatArray, G::FloatArray)
+    update_em_stats!(estim_settings::EstimSettings, Xs::FloatVector, Xs_old::FloatVector, Ps::SymMatrix, Ps_old::SymMatrix, D::FloatArray, E::FloatArray, F::FloatArray, G::FloatArray)
 
-Update the EM statistics: E, F and G.
+Update the EM statistics: D, E, F and G.
 """
-function update_em_stats!(estim_settings::EstimSettings, Xs::FloatVector, Xs_old::FloatVector, Ps::SymMatrix, Ps_old::SymMatrix, E::FloatArray, F::FloatArray, G::FloatArray)
+function update_em_stats!(estim_settings::EstimSettings, Xs::FloatVector, Xs_old::FloatVector, Ps::SymMatrix, Ps_old::SymMatrix, D::FloatArray, E::FloatArray, F::FloatArray, G::FloatArray)
 
     # Views
     Xs_view = @view Xs[1:estim_settings.s];
+    Ps_view = @view Ps[1:estim_settings.s, 1:estim_settings.s];
     Xs_old_view = @view Xs_old[1:estim_settings.sp];
     Ps_old_view = @view Ps_old[1:estim_settings.sp, 1:estim_settings.sp];
     PPs_view = @view Ps[1:estim_settings.s, estim_settings.s+1:end];
 
     # Update EM statistics
-    E .+= Xs*Xs' + Ps;
+    D .+= Xs*Xs' + Ps;
+    E .+= Xs_view*Xs_view' + Ps_view;
     F .+= Xs_view*Xs_old_view' + PPs_view;
     G .+= Xs_old_view*Xs_old_view' + Ps_old_view;
 end
@@ -61,6 +63,7 @@ Where ``e_{t} ~ N(0, R)`` and ``v_{t} ~ N(0, V)``.
 function ksmoother_em!(estim_settings::EstimSettings, kalman_settings::MutableKalmanSettings, status::KalmanStatus)
 
     # Memory pre-allocation
+    D = zeros(kalman_settings.m, kalman_settings.m);
     E = zeros(estim_settings.s, estim_settings.s);
     F = zeros(estim_settings.s, estim_settings.sp);
     G = zeros(estim_settings.sp, estim_settings.sp);
@@ -82,11 +85,13 @@ function ksmoother_em!(estim_settings::EstimSettings, kalman_settings::MutableKa
         Xs_old = backwards_pass(Xf_lagged, J1, Xs, Xp);
         Ps_old = backwards_pass(Pf_lagged, J1, Ps, Pp);
 
-        # Update EM statistics: E, F and G
-        update_em_stats!(estim_settings, Xs, Xs_old, Ps, Ps_old, E, F, G);
+        # Update EM statistics: D, E, F and G
+        update_em_stats!(estim_settings, Xs, Xs_old, Ps, Ps_old, D, E, F, G);
 
         # Update EM statistics: YXs
-        update_em_stats_YXs!(kalman_settings, Xs, YXs);
+        if estim_settings.update_observation_eqs
+            update_em_stats_YXs!(kalman_settings, Xs, YXs);
+        end
 
         # Update Xs and Ps
         Xs = copy(Xs_old);
@@ -102,39 +107,58 @@ function ksmoother_em!(estim_settings::EstimSettings, kalman_settings::MutableKa
     kalman_settings.X0 = backwards_pass(kalman_settings.X0, J1, Xs, Xp);
     kalman_settings.P0 = backwards_pass(kalman_settings.P0, J1, Ps, Pp);
 
-    # Update EM statistics: E, F and G
-    update_em_stats!(estim_settings, Xs, kalman_settings.X0, Ps, kalman_settings.P0, E, F, G);
+    # Update EM statistics: D, E, F and G
+    update_em_stats!(estim_settings, Xs, kalman_settings.X0, Ps, kalman_settings.P0, D, E, F, G);
 
     # Update EM statistics: YXs
-    update_em_stats_YXs!(kalman_settings, Xs, YXs);
+    if estim_settings.update_observation_eqs
+        update_em_stats_YXs!(kalman_settings, Xs, YXs);
+    end
 
-    # Use Symmetric for E and G
+    # Use Symmetric for D, E and G
+    D_sym = Symmetric(D)::SymMatrix;
     E_sym = Symmetric(E)::SymMatrix;
     G_sym = Symmetric(G)::SymMatrix;
 
     # Return EM statistics
-    return E_sym, F, G_sym, YXs;
+    return D_sym, E_sym, F, G_sym, YXs;
 end
 
 """
-    em_observation!(kalman_settings::MutableKalmanSettings, estim_settings::EstimSettings, E::SymMatrix, YXs::FloatMatrix)
+    em_observation_eqs!(estim_settings::EstimSettings, kalman_settings::MutableKalmanSettings, D::SymMatrix, YXs::FloatMatrix)
 
 Update coefficients of the observation equations.
 """
-function em_observation!(kalman_settings::MutableKalmanSettings, estim_settings::EstimSettings, E::SymMatrix, YXs::FloatMatrix)
+function em_observation_eqs!(estim_settings::EstimSettings, kalman_settings::MutableKalmanSettings, D::SymMatrix, YXs::FloatMatrix)
 
+    # Inverse of E
+    inv_D = inv(D);
+
+    # Update B
+    if estim_settings.update_B
+        for i=1:kalman_settings.n
+            for j=1:kalman_settings.m
+                @views if ismissing(estim_settings.B_constraints[i,j])
+                    kalman_settings.B[i,j] = YXs[i,:]'*inv_D[:,j];
+                end
+            end
+        end
+    end
+
+    # Update R
+    if estim_settings.update_R
+    end
 end
 
 """
-    em_transition!(kalman_settings::MutableKalmanSettings, estim_settings::EstimSettings, E::FloatMatrix, F::FloatMatrix, G::SymMatrix)
+    em_transition_eqs!(estim_settings::EstimSettings, kalman_settings::MutableKalmanSettings, E::SymMatrix, F::FloatMatrix, G::SymMatrix)
 
 Update coefficients of the transition equations.
 """
-function em_transition!(kalman_settings::MutableKalmanSettings, estim_settings::EstimSettings, E::SymMatrix, F::FloatMatrix, G::SymMatrix)
+function em_transition_eqs!(estim_settings::EstimSettings, kalman_settings::MutableKalmanSettings, E::SymMatrix, F::FloatMatrix, G::SymMatrix)
 
     # Initialise
     Ψ = @view kalman_settings.C[1:estim_settings.s, 1:estim_settings.sp];
-    E_var = @view E[estim_settings.s, estim_settings.s];
 
     # VAR(p) coefficients
     for i=1:estim_settings.s
@@ -143,7 +167,7 @@ function em_transition!(kalman_settings::MutableKalmanSettings, estim_settings::
     end
 
     # Covariance matrix of the VAR(p) residuals
-    parent(kalman_settings.V)[1:estim_settings.s, 1:estim_settings.s] = Symmetric(E_var-F*Ψ'-Ψ*F'+Ψ*G*Ψ')::SymMatrix ./ estim_settings.T;
+    parent(kalman_settings.V)[1:estim_settings.s, 1:estim_settings.s] = Symmetric(E-F*Ψ'-Ψ*F'+Ψ*G*Ψ')::SymMatrix ./ estim_settings.T;
 end
 
 """
@@ -170,13 +194,15 @@ function em_routine(kalman_settings::MutableKalmanSettings, estim_settings::Esti
     else
 
         # EM statistics
-        E, F, G, YXs = ksmoother_em!(kalman_settings, status);
+        D, E, F, G, YXs = ksmoother_em!(estim_settings, kalman_settings, status);
 
         # Update coefficients: observation equations
-        em_observation!(kalman_settings, estim_settings, E, YXs);
+        if estim_settings.update_observation_eqs
+            em_observation_eqs!(estim_settings, kalman_settings, D, YXs);
+        end
 
         # Update coefficients: observation equations
-        em_transition!(kalman_settings, estim_settings, E, F, G);
+        em_transition_eqs!(estim_settings, kalman_settings, E, F, G);
     end
 
     # Return output
@@ -198,4 +224,5 @@ The code implements the EM similarly to the ECM in Pellegrino (2020).
 - Dempster, Laird and Rubin (1977), Pellegrino (2020), Shumway and Stoffer (1982).
 """
 function em_estimation(kalman_settings::MutableKalmanSettings, estim_settings::EstimSettings)
+    verb_message(estim_settings.verb, "em > iter=$(iter), loglik=$(round(loglik_new, digits=5))");
 end
