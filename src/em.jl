@@ -131,8 +131,8 @@ Update coefficients of the observation equations.
 """
 function em_observation_eqs!(estim_settings::EstimSettings, kalman_settings::MutableKalmanSettings, D::SymMatrix, YXs::FloatMatrix)
 
-    # Inverse of E
-    inv_D = inv(D);
+    # Inverse of D
+    inv_D = inv(D); # D is wrong I need to skip the missing ts
 
     # Update B
     if estim_settings.update_B
