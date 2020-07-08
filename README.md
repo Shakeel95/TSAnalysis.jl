@@ -54,7 +54,7 @@ function download_fred_vintage(tickers::Array{String,1}, transformations::Array{
         if i == 1
             output_data = copy(fred_data);
         else
-            output_data = join(output_data, fred_data, on=:date, kind = :outer);
+            output_data = outerjoin(output_data, fred_data, on=:date);
         end
     end
 
